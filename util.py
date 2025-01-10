@@ -117,3 +117,9 @@ def scale_eye(image, eye_points, scale=1.5):
     image = cv2.seamlessClone(scaled_eye, image, np.ones_like(scaled_eye, dtype=np.uint8)*255, (center_x, center_y), cv2.NORMAL_CLONE)
     
     return image
+
+
+def face_swap(img1, img2):
+    # landmarks1 = get_landmarks(img1)
+    pass
+    

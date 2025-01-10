@@ -9,6 +9,7 @@ drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 
 webCam = True
 video_path = "data/video2.mp4"
+swap_path = "data/2.jpg"
 
 cap = cv2.VideoCapture(video_path)
 with mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True,

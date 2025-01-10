@@ -4,82 +4,71 @@ import numpy as np
 
 # Mediapipe 초기화
 mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
 
-# 눈 랜드마크 (왼쪽과 오른쪽 눈의 Mediapipe FaceMesh 인덱스)
-LEFT_EYE_LANDMARKS = [33, 160, 158, 133, 153, 144, 145, 153]
-RIGHT_EYE_LANDMARKS = [362, 385, 387, 263, 373, 380, 381, 382]
-
-def get_eye_region(landmarks, eye_indexes, image_shape):
-    """눈 영역 좌표를 반환"""
-    h, w, _ = image_shape
-    points = np.array([(int(landmarks[idx].x * w), int(landmarks[idx].y * h)) for idx in eye_indexes])
-    return points
-
-def scale_eye(image, eye_points, scale=1.5):
-    """눈 크기를 변경"""
-    # 눈 영역의 경계 상자 계산
-    x, y, w, h = cv2.boundingRect(eye_points)
-
-    # 눈 영역만 추출
-    eye_roi = image[y:y + h, x:x + w]
-
-    # 중심 좌표 계산
-    center_x, center_y = x + w // 2, y + h // 2
-
-    # 크기 변경
-    scaled_eye = cv2.resize(eye_roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-
-    # 마스크 생성
-    mask = np.zeros_like(image)
-    scaled_h, scaled_w = scaled_eye.shape[:2]
-    scaled_x = center_x - scaled_w // 2
-    scaled_y = center_y - scaled_h // 2
-
-    mask[scaled_y:scaled_y + scaled_h, scaled_x:scaled_x + scaled_w] = scaled_eye
-
-    # 이미지에 눈 영역 적용
-    image = cv2.seamlessClone(scaled_eye, image, np.ones_like(scaled_eye, dtype=np.uint8) * 255, (center_x, center_y), cv2.NORMAL_CLONE)
-
-    return image
-
-def process_frame(frame, face_mesh):
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb_frame)
-
+def get_face_landmarks(image):
+    results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     if results.multi_face_landmarks:
-        for face_landmarks in results.multi_face_landmarks:
-            landmarks = face_landmarks.landmark
+        return results.multi_face_landmarks[0]
+    return None
 
-            # 왼쪽과 오른쪽 눈 영역 추출
-            left_eye_points = get_eye_region(landmarks, LEFT_EYE_LANDMARKS, frame.shape)
-            print(left_eye_points)
-            right_eye_points = get_eye_region(landmarks, RIGHT_EYE_LANDMARKS, frame.shape)
+def warp_face(src_img, src_points, dst_img, dst_points):
+    hull_index = cv2.convexHull(np.array(dst_points), returnPoints=False)
+    hull_src = [src_points[int(idx)] for idx in hull_index]
+    hull_dst = [dst_points[int(idx)] for idx in hull_index]
+    
+    mask = np.zeros_like(dst_img, dtype=np.uint8)
+    cv2.fillConvexPoly(mask, np.int32(hull_dst), (255, 255, 255))
+    rect = cv2.boundingRect(np.float32(hull_dst))
+    
+    subdiv = cv2.Subdiv2D(rect)
+    subdiv.insert(hull_dst)
+    triangles = subdiv.getTriangleList()
+    triangles = np.array([t.reshape(3, 2) for t in triangles], dtype=np.float32)
 
-            # 눈 크기 변경
-            frame = scale_eye(frame, left_eye_points)
-            frame = scale_eye(frame, right_eye_points)
+    for t in triangles:
+        pts_src = [src_points[dst_points.index(tuple(pt))] for pt in t]
+        pts_dst = t
+        warp_mat = cv2.getAffineTransform(np.float32(pts_src), np.float32(pts_dst))
+        warped = cv2.warpAffine(src_img, warp_mat, (dst_img.shape[1], dst_img.shape[0]))
+        mask_tri = np.zeros_like(dst_img, dtype=np.uint8)
+        cv2.fillConvexPoly(mask_tri, np.int32(pts_dst), (255, 255, 255))
+        dst_img = cv2.bitwise_and(dst_img, cv2.bitwise_not(mask_tri))
+        dst_img = cv2.add(dst_img, warped)
+    
+    return dst_img
 
-    return frame
+def extract_points(landmarks, img):
+    h, w = img.shape[:2]
+    return [(int(pt.x * w), int(pt.y * h)) for pt in landmarks.landmark]
 
-# 비디오 캡처
-cap = cv2.VideoCapture("data/video2.mp4")
+def blend_faces(img1, img2, warped_face, mask):
+    center = (mask.shape[1] // 2, mask.shape[0] // 2)
+    return cv2.seamlessClone(warped_face, img1, mask, center, cv2.NORMAL_CLONE)
 
-with mp_face_mesh.FaceMesh(
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
-) as face_mesh:
-    while cap.isOpened():
-        success, frame = cap.read()
-        if not success:
-            break
+# 입력 이미지
+image1 = cv2.imread('image1.jpg')
+image2 = cv2.imread('image2.jpg')
 
-        frame = process_frame(frame, face_mesh)
-        cv2.imshow('Eye Size Change', frame)
+# 얼굴 특징점 추출
+landmarks1 = get_face_landmarks(image1)
+landmarks2 = get_face_landmarks(image2)
 
-        if cv2.waitKey(5) & 0xFF == 27:  # ESC 키를 눌러 종료
-            break
-
-cap.release()
-cv2.destroyAllWindows()
+if landmarks1 and landmarks2:
+    points1 = extract_points(landmarks1, image1)
+    points2 = extract_points(landmarks2, image2)
+    
+    # 이미지 2 얼굴을 이미지 1에 매핑
+    warped_face = warp_face(image2, points2, image1, points1)
+    
+    # 얼굴 합성
+    mask = np.zeros_like(image1, dtype=np.uint8)
+    hull = cv2.convexHull(np.array(points1, dtype=np.int32))
+    cv2.fillConvexPoly(mask, hull, (255, 255, 255))
+    
+    output = blend_faces(image1, image2, warped_face, mask)
+    cv2.imshow('Swapped Face', output)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+else:
+    print("얼굴을 감지할 수 없습니다.")
